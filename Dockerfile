@@ -14,7 +14,7 @@ WORKDIR /usr/src/app
 COPY poetry.lock pyproject.toml ./
 
 RUN poetry config virtualenvs.create false \
-  && poetry install --no-interaction --no-ansi --only main
+  && poetry install --no-interaction --no-ansi --only main --no-root
 
 # TODO move this after poetry install but then pyprojet.toml packages entry cannot find wireviz_web
 COPY . .
