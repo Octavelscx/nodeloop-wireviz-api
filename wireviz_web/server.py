@@ -18,9 +18,13 @@
 #
 from pathlib import PurePath
 
+import os
+import tempfile
+import subprocess
 import werkzeug
 from flask import Blueprint, Response, request
 from flask_restx import Api, Resource, reqparse
+from werkzeug.utils import secure_filename
 
 from wireviz_web import __version__
 from wireviz_web.core import decode_plantuml, mimetype_to_type, type_to_mimetype, wireviz_render
@@ -85,16 +89,44 @@ class RenderRegular(Resource):
         # Read input YAML.
         args = file_upload.parse_args()
         yaml_input = args["yml_file"].read()
+        images = request.files.getlist("images")
 
         # Determine input- and output file names.
         input_filename = args["yml_file"].filename
         output_filename = PurePath(PurePath(input_filename).stem).with_suffix("." + mimetype_to_type(mimetype)).name
 
-        # Respond with rendered image.
-        return wireviz_render(
-            input_yaml=yaml_input,
-            output_mimetype=mimetype,
-            output_filename=output_filename,
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "input.yml")
+            with open(src, "wb") as f:
+                f.write(yaml_input)
+            out = os.path.join(tmp, output_filename)
+
+            if images:
+                resdir = os.path.join(tmp, "resources")
+                os.makedirs(resdir, exist_ok=True)
+                for img in images:
+                    img.save(os.path.join(resdir, secure_filename(img.filename)))
+
+            try:
+                subprocess.check_call([
+                    "wireviz",
+                    src,
+                    "-o",
+                    out,
+                    f"--{mimetype_to_type(mimetype)}",
+                ])
+            except subprocess.CalledProcessError:
+                raise
+
+            with open(out, "rb") as f:
+                payload = f.read()
+
+        return Response(
+            payload,
+            mimetype=mimetype,
+            headers={
+                "Content-Disposition": f"attachment; filename={output_filename}"
+            },
         )
 
 
