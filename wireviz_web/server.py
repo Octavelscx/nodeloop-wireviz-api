@@ -105,7 +105,7 @@ class RenderRegular(Resource):
                 resdir = os.path.join(tmp, "resources")
                 os.makedirs(resdir, exist_ok=True)
                 for img in images:
-                    img.save(os.path.join(resdir, secure_filename(img.filename)))
+                    img.save(os.path.join(resdir, img.filename))
 
             try:
                 # SVG est le format par défaut ; pas besoin de préciser -f
