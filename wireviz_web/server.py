@@ -3,32 +3,27 @@
 # Copyright (C) 2020  Jürgen Key <jkey@arcor.de>
 # Copyright (C) 2021  Andreas Motl <andreas.motl@panodata.org>
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-from pathlib import PurePath
+# This program is licensed under the GNU Affero General Public License v3.0.
+# See <http://www.gnu.org/licenses/>.
 
+from pathlib import Path, PurePath
 import os
-import tempfile
 import subprocess
+import tempfile
 import werkzeug
 from flask import Blueprint, Response, request
 from flask_restx import Api, Resource, reqparse
-from werkzeug.utils import secure_filename
 
 from wireviz_web import __version__
-from wireviz_web.core import decode_plantuml, mimetype_to_type, type_to_mimetype, wireviz_render
+from wireviz_web.core import (
+    decode_plantuml,
+    mimetype_to_type,
+    type_to_mimetype,
+    wireviz_render,
+)
 
+# ──────────────────────────────
+# Request parser pour l’upload YAML
 file_upload = reqparse.RequestParser()
 file_upload.add_argument(
     "yml_file",
@@ -43,110 +38,74 @@ api = Api(
     app=wireviz_blueprint,
     version=__version__,
     title="WireViz-Web",
-    description="A wrapper around WireViz for bringing it to the web. " "Easily document cables and wiring harnesses.",
+    description="A wrapper around WireViz to render cable diagrams on the web.",
     doc="/doc",
     catch_all_404s=True,
 )
 
 ns = api.namespace("", description="WireViz-Web REST API")
 
-
+# ──────────────────────────────
 @ns.route("/render")
 class RenderRegular(Resource):
     @api.expect(file_upload)
     @ns.produces(["image/png", "image/svg+xml"])
     def post(self) -> Response:
         """
-        Receive a "multipart/form-data" file upload request with filename "yml_file".
-        The "Accept" request header will determine the response image type.
-
-        Examples
-        ========
-        ::
-
-            # Acquire WireViz YAML file.
-            wget https://raw.githubusercontent.com/daq-tools/wireviz-web/main/tests/demo01.yaml
-
-            # Render images.
-            http --form http://localhost:3005/render yml_file@demo01.yaml Accept:image/svg+xml
-            http --form http://localhost:3005/render yml_file@demo01.yaml Accept:image/png
-
-            # Render HTML page with SVG image and BOM table.
-            http --form http://localhost:3005/render yml_file@demo01.yaml Accept:text/html
-
-            # Render BOM in TSV format.
-            http --form http://localhost:3005/render yml_file@demo01.yaml Accept:text/plain
-
-            # Render BOM in JSON format.
-            http --form http://localhost:3005/render yml_file@demo01.yaml Accept:application/json
-
-        :return: A Flask Response object with the rendered image.
+        Upload a WireViz YAML (field **yml_file**) and optional images (field **images**).
+        The HTTP *Accept* header chooses SVG (default) or PNG.
         """
-
-        # The designated output image mime type.
-        mimetype = request.headers.get("accept")
-
-        # Read input YAML.
+        # ────────────── paramètres et fichiers
+        mimetype = request.headers.get("accept") or "image/svg+xml"
         args = file_upload.parse_args()
         yaml_input = args["yml_file"].read()
         images = request.files.getlist("images")
 
-        # Determine input- and output file names.
-        input_filename = args["yml_file"].filename
-        output_filename = PurePath(PurePath(input_filename).stem).with_suffix("." + mimetype_to_type(mimetype)).name
+        # ────────────── noms de fichiers
+        input_filename = args["yml_file"].filename            # ex. demo01.yaml
+        fmt = mimetype_to_type(mimetype)                      # svg | png
+        output_filename = PurePath(input_filename).with_suffix(f".{fmt}").name
 
+        # ────────────── travail en répertoire temporaire
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, "input.yml")
             with open(src, "wb") as f:
                 f.write(yaml_input)
-            out = os.path.join(tmp, output_filename)
 
+            # copier les images dans tmp/resources/
             if images:
                 resdir = os.path.join(tmp, "resources")
                 os.makedirs(resdir, exist_ok=True)
                 for img in images:
-                    img.save(os.path.join(resdir, img.filename))
+                    img.save(os.path.join(resdir, img.filename))  # conserver le nom original
 
+            # ───────── WireViz : dossier de sortie = tmp
             try:
-                # SVG est le format par défaut ; pas besoin de préciser -f
-                subprocess.check_call([
-                    "wireviz",
-                    src,
-                    "-o", out,
-                ])
+                cmd = ["wireviz", src, "-o", tmp]
+                if fmt != "svg":                       # svg est le défaut
+                    cmd.extend(["-f", fmt])
+                subprocess.check_call(cmd)
             except subprocess.CalledProcessError as e:
-                raise
+                raise RuntimeError(f"WireViz failed: {e}") from e
 
-            with open(out, "rb") as f:
+            # fichier généré = input.<fmt>
+            out_file = os.path.join(tmp, f"{Path(src).stem}.{fmt}")
+            with open(out_file, "rb") as f:
                 payload = f.read()
 
         return Response(
             payload,
             mimetype=mimetype,
-            headers={
-                "Content-Disposition": f"attachment; filename={output_filename}"
-            },
+            headers={"Content-Disposition": f"attachment; filename={output_filename}"},
         )
 
-
+# ──────────────────────────────
 @ns.route("/plantuml/<imagetype>/<encoded>")
 @ns.param("encoded", "PlantUML Text Encoding format")
 class RenderPlantUML(Resource):
     @ns.produces(["image/png", "image/svg+xml"])
     def get(self, imagetype: str, encoded: str) -> Response:
-        """
-        Receive PlantUML Text Encoding format within URL path.
-        The URL prefix will determine the response image type.
-
-        Examples
-        ========
-        ::
-
-            http http://localhost:3005/png/SyfFKj2rKt3CoKnELR1Io4ZDoSa700==
-            http http://localhost:3005/svg/SyfFKj2rKt3CoKnELR1Io4ZDoSa700==
-
-        :return: A Flask Response object with the rendered image.
-        """
+        """Render a PlantUML diagram via WireViz-Web."""
         mimetype = type_to_mimetype(imagetype)
         yaml_input = decode_plantuml(input_plantuml=encoded)
         return wireviz_render(
