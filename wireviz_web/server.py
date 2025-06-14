@@ -108,12 +108,12 @@ class RenderRegular(Resource):
                     img.save(os.path.join(resdir, secure_filename(img.filename)))
 
             try:
+                fmt = mimetype_to_type(mimetype)           # "svg", "png", "pdf", …
                 subprocess.check_call([
                     "wireviz",
                     src,
-                    "-o",
-                    out,
-                    f"--{mimetype_to_type(mimetype)}",
+                    "-o", out,
+                    "-f", fmt,          # ✅ option correcte
                 ])
             except subprocess.CalledProcessError:
                 raise
